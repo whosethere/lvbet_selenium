@@ -1,0 +1,124 @@
+from selenium import webdriver
+import time
+import bs4
+import datetime
+import json
+from pymongo import MongoClient
+
+def generate_match_id(home_team_name, away_team_name,match_date):
+    home_team_name = home_team_name.lower()
+    away_team_name = away_team_name.lower()
+    match_date = match_date.split("-")
+    match_id = home_team_name[0]+away_team_name[0]+away_team_name[-2]+away_team_name[-1]+home_team_name[-1]+match_date[0]+match_date[1]+match_date[2]
+    return match_id
+
+def update_match_odds(match_id, odds_home, odds_away, update_time):
+    client = get_connection(col_name='merge_hltv_lvbet')
+    myquery = { "match_id": match_id }
+    newvalues = { "$set": { "lvbet_odds_home_team": odds_home, "lvbet_odds_away_team": odds_away, "update_time": update_time} }
+    x = client.update_one(myquery, newvalues)
+    # print(x.modified_count)
+
+def match_is_in_database(match_id):
+    client = get_connection()
+    # match_in_database = clisent.find_one( { "match_id": {"$eq": match_id } })
+    document_count = client.count_documents({"match_id": {"$eq": match_id}})
+    if document_count > 0:
+        return True
+    else:
+        return False
+
+def get_event_name(info_string):
+    info_string = str(info_string)
+    event_name = info_string.split("-")[-1]
+    return event_name
+
+def get_timestamp(dt):
+    dt = str(dt)
+    dt = dt.split("C")[0]
+    year = datetime.datetime.now().year
+    dt = dt+"."+str(year)
+    dt = datetime.datetime.strptime(dt, '%H:%M %d.%m.%Y')
+    match_date = dt.date()
+    match_time = dt.time()
+    timesmp = datetime.datetime.timestamp(dt)
+    match_date = match_date.strftime("%Y-%m-%d")
+    match_time = match_time.strftime("%H:%M")
+    return timesmp,match_date,match_time
+
+def get_connection(db_name="bet_data_odds", col_name="test"):
+    client = MongoClient('mongo connection link')
+    client = client[db_name][col_name]
+    return client
+
+def insert_lvbet_odds(match_id, home_team_name, away_team_name,match_date,match_time,tournament_name,
+                      odds_home, odds_away, odds_first_home, odds_first_away,time_added, match_timestamp):
+    insert_lvbet_match_odds = get_connection()
+    record = {
+        "match_id": match_id,
+        "home_team_name": home_team_name,
+        "away_team_name": away_team_name,
+        "match_date": match_date,
+        "match_time": match_time,
+        "tournament_name": tournament_name,
+        
+        "odds_home": odds_home,
+        "odds_away": odds_away,
+
+        "odds_first_home":odds_first_home,
+        "odds_first_away": odds_first_away,
+        
+        "time_added": time_added,
+        "match_timestamp": match_timestamp
+    }
+    result = insert_lvbet_match_odds.insert_one(record)
+
+def update_match_odds(match_id, odds_home, odds_away, update_time):
+    client = get_connection(col_name='merge_hltv_lvbet')
+    myquery = { "match_id": match_id }
+    newvalues = { "$set": { "odds_home": odds_home, "odds_away": odds_away, "update_time": update_time} }
+    x = client.update_one(myquery, newvalues)
+    print(x.modified_count)
+
+driver = webdriver.Chrome('driver_links')
+driver.set_window_size(1600, 900)
+driver.get('https://lvbet.pl/pl/esport')
+time.sleep(15)
+driver.find_element_by_xpath("//span[text()='Counter-Strike: GO (CS:GO)']").click()
+driver.find_element_by_xpath("//span[text()='Świat']").click()
+driver.find_element_by_xpath("//span[text()='Wybierz wszystkie']").click()
+time.sleep(20)
+lvbet_html = driver.page_source
+soup = bs4.BeautifulSoup(lvbet_html, 'html.parser')
+lvbet_matches = soup.findAll("div", {"class": ["sb-odds-table-game ng-star-inserted", "sb-odds-table-game"]})
+driver.quit()
+
+for match in lvbet_matches:
+    match_info = match.find("ul").get_text(strip=True)
+    teams = match.find("a", {"class": ["game"]})
+    teams = teams.find_all("li")
+    
+    home_team_name = teams[0].get_text(strip=True)
+    away_team_name = teams[1].get_text(strip=True)
+    
+    if match.find_all("rate-button"):
+        odds_home = match.find_all("rate-button")[0].get_text(strip=True)
+        odds_away = match.find_all("rate-button")[1].get_text(strip=True)
+        odds_first_home = odds_home
+        odds_first_away = odds_away
+    else:
+	    continue
+    
+    match_timestamp,match_date,match_time = get_timestamp(match_info)
+    tournament_name = get_event_name(match_info) 
+    match_id = generate_match_id(home_team_name, away_team_name, match_date)
+    time_added = datetime.datetime.timestamp(datetime.datetime.now())
+    
+    if match_is_in_database(match_id):
+        update_match_odds(match_id, odds_home, odds_away, time_added)
+        continue
+    else:
+        insert_lvbet_odds(match_id, home_team_name, away_team_name,
+                          match_date,match_time,tournament_name,
+                          odds_home, odds_away, odds_first_home, odds_first_away,
+                           time_added, match_timestamp)
